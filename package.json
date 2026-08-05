@@ -1,0 +1,62 @@
+{
+  "name": "smp.js",
+  "version": "0.1.0",
+  "description": "Compile annotated JavaScript to threaded, SIMD WebAssembly. OpenMP-style directives; the annotated source still runs as plain JS.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Fazli Sapuan <fazli@sapuan.org>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gpujs/smp.js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/gpujs/smp.js/issues"
+  },
+  "homepage": "https://github.com/gpujs/smp.js#readme",
+  "bin": {
+    "smp.js": "./bin/smp.js",
+    "smp": "./bin/smp.js"
+  },
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./plugin": "./src/plugin.js",
+    "./runtime": "./src/runtime/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "example": "node bin/smp.js build examples/backtest.js --out examples/build --verbose"
+  },
+  "keywords": [
+    "wasm",
+    "webassembly",
+    "simd",
+    "threads",
+    "openmp",
+    "parallel",
+    "compiler",
+    "assemblyscript",
+    "rolldown",
+    "vite",
+    "rollup"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "acorn": "^8.18.0"
+  },
+  "peerDependencies": {
+    "assemblyscript": ">=0.28.0"
+  },
+  "devDependencies": {
+    "assemblyscript": "^0.28.20"
+  }
+}
