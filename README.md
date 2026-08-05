@@ -39,12 +39,15 @@ examples/hseqr.js -> build/hseqr.wasm  [runHSEQR, runBatch]
 import { load } from "./build/hseqr.js";
 
 const smp = await load({ threads: navigator.hardwareConcurrency });
-const mats = smp.alloc.f64(K * n * n);
-const wr   = smp.alloc.f64(K * n);
-const wi   = smp.alloc.f64(K * n);
+
+const mats    = smp.alloc.f64(K * n * n);
+const scratch = smp.alloc.f64(K * n * n);  // each iteration works in its own slice
+const wr      = smp.alloc.f64(K * n);
+const wi      = smp.alloc.f64(K * n);
 mats.view.set(batch);
 
 smp.parallel.runBatch(K, mats.ptr, n, wr.ptr, wi.ptr, scratch.ptr, K);
+// wr.view / wi.view now hold K * n eigenvalues
 ```
 
 ## Benchmark
@@ -90,8 +93,6 @@ deflation and would win on algorithm rather than codegen.
 Pyodide's scipy is a non-pthreads wasm32 build (`os.cpu_count() == 1`), so the
 multi-threaded rows compare against a single-threaded LAPACK. That is the only
 wasm LAPACK available; the comparison is noted rather than hidden.
-
-## Why comments
 
 ## Why comments
 
