@@ -6,38 +6,92 @@ JavaScript with no compiler involved.
 
 ```js
 /**
+ * Solve a batch of eigenproblems. One directive is the entire concurrency
+ * surface -- `runHSEQR` below it is 150 lines of branchy f64 numerics that never
+ * mention threads, memory or the compiler.
+ *
  * @kernel
  * @parallel for schedule(dynamic)
- * @param {Float64Array} prices
- * @param {i32} T
- * @param {Float64Array} params
- * @param {i32} nRuns
- * @param {Float64Array} out
+ * @shared mats
+ * @param {Float64Array} mats
+ * @param {i32} n
+ * @param {Float64Array} wrOut
+ * @param {Float64Array} wiOut
+ * @param {Float64Array} scratch
+ * @param {i32} K
  */
-export function runSweep(prices, T, params, nRuns, out) {
-  for (let r = 0; r < nRuns; r++) {
-    const b = r * 4;
-    out[r] = runBacktest(prices, T, params[b], params[b + 1], params[b + 2], params[b + 3]);
+export function runBatch(mats, n, wrOut, wiOut, scratch, K) {
+  for (let b = 0; b < K; b++) {
+    const base = b * n * n;
+    for (let i = 0; i < n * n; i++) scratch[base + i] = mats[base + i];
+    runHSEQR(scratch, base, n, wrOut, b * n, wiOut, b * n, 60);
   }
 }
 ```
 
 ```console
-$ npx smp.js build src/kernels.js --out build
-src/kernels.js -> build/kernels.wasm  [runBacktest, runSweep]
-  loader: build/kernels.js
+$ npx smp.js build examples/hseqr.js --out build --memory 600
+examples/hseqr.js -> build/hseqr.wasm  [runHSEQR, runBatch]
+  loader: build/hseqr.js
 ```
 
 ```js
-import { load } from "./build/kernels.js";
+import { load } from "./build/hseqr.js";
 
 const smp = await load({ threads: navigator.hardwareConcurrency });
-const prices = smp.alloc.f64(200_000);
-const out    = smp.alloc.f64(nRuns);
-prices.view.set(series);
+const mats = smp.alloc.f64(K * n * n);
+const wr   = smp.alloc.f64(K * n);
+const wi   = smp.alloc.f64(K * n);
+mats.view.set(batch);
 
-smp.parallel.runSweep(nRuns, prices.ptr, 200_000, params.ptr, nRuns, out.ptr);
+smp.parallel.runBatch(K, mats.ptr, n, wr.ptr, wi.ptr, scratch.ptr, K);
 ```
+
+## Benchmark
+
+`examples/hseqr.js` is **HSEQR** — the Francis double-shift QR iteration for
+nonsymmetric eigenvalues. It is the LAPACK phase a GPU cannot take: f64-critical
+(at f32 epsilon, clustered eigenvalues never separate, and WGSL has no f64),
+branch-divergent, strictly sequential within one matrix, and small enough to be
+latency-bound. So the parallelism has to come from batching across matrices.
+
+512 matrices at n=64, Apple M2 Max, Node 24. Reproduce with `npm run bench`:
+
+| | time | vs plain JS | vs LAPACK |
+|---|---:|---:|---:|
+| source run as plain JavaScript | 317.1 ms | 1.00× | 0.95× |
+| **smp.js, 1 thread** | **194.9 ms** | **1.63×** | **1.55×** |
+| smp.js, 4 threads | 52.2 ms | 6.08× | 5.79× |
+| **smp.js, 8 threads** | **26.6 ms** | **11.90×** | **11.35×** |
+| LAPACK `dhseqr` (Fortran → Emscripten → wasm) | 302.3 ms | — | 1.00× |
+
+Every smp.js result is **bit-identical** to the same source run as plain
+JavaScript. The spectra agree with LAPACK to `1.5e-14`, and 21,930 of 32,768
+eigenvalues come out complex — this is genuinely exercising the nonsymmetric
+path, not a symmetric problem in disguise.
+
+Payload matters as much as the timing:
+
+| | |
+|---|---|
+| `hseqr.wasm` | **2.4 KB** |
+| Pyodide runtime + numpy + scipy wheels | ~29 MB, ~2 s startup |
+
+**How the LAPACK arm is measured.** scipy exposes `dgeev`, not `dhseqr`, and
+`dgeev` = balance + `dgehrd` + `dhseqr`. Our inputs are *already* Hessenberg, so
+every Householder reflector in `dgehrd` is trivially zero and the reduction
+collapses to O(n²) — measured at 2.4 ms against 74 ms on dense controls. So
+`dgeev`'s cost here really is the QR iteration. Python wrapper overhead (1.2 ms
+over 512 calls) is measured separately and subtracted. At n=64, LAPACK's `dhseqr`
+delegates to `dlahqr`, the same classic double-shift this kernel implements;
+above LAPACK's `NMIN` (~75) it switches to multishift with aggressive early
+deflation and would win on algorithm rather than codegen.
+
+Pyodide's scipy is a non-pthreads wasm32 build (`os.cpu_count() == 1`), so the
+multi-threaded rows compare against a single-threaded LAPACK. That is the only
+wasm LAPACK available; the comparison is noted rather than hidden.
+
+## Why comments
 
 ## Why comments
 
@@ -124,7 +178,7 @@ All directives are JSDoc tags. Full reference in [`docs/DIRECTIVES.md`](docs/DIR
 | `@returns {type}` | return type (default `void`) |
 | `@parallel for schedule(dynamic\|static)` | run the function's `for` loop across a worker pool |
 | `@shared x` | one copy, read by all threads |
-| `@private x` | one copy per thread |
+| `@private x` | one copy per thread *(parsed, not yet lowered — see Roadmap)* |
 | `@simd`, `@simdlen N` | vectorise an inner loop *(checked, not yet lowered — see Roadmap)* |
 
 Types: `f64` `f32` `i32` `i64` `u32` `bool`, and `Float64Array` `Float32Array`
@@ -168,10 +222,11 @@ it:
 - **AOT codegen is where the speed is.** Hand-written AssemblyScript ran
   **1.75×** faster than JIT'd JS on a branchy f64 kernel, and the gap held at
   **101%** of its single-thread value under 8-way threading.
-- **The residual matters most.** On batched HSEQR — the LAPACK phase a GPU cannot
-  take (f64-critical, branch-divergent, sequential per instance) — compiled
-  output was **2.1× faster than LAPACK compiled to wasm** via Emscripten, at
-  2 KB instead of ~29 MB.
+- **The residual matters most.** Batched HSEQR — the LAPACK phase a GPU cannot
+  take — is where the compiler earns its keep, and where the benchmark above
+  comes from. (The research measured a larger gap, 2.1×, in Chromium with
+  hand-written AssemblyScript; Node is faster for both sides, so the ratio
+  reported above is the smaller and more conservative one.)
 - **SIMD is real but modest.** Vectorising to `f64x2` gave **1.21×**. wasm f64
   SIMD is only 2 lanes wide, and there is no gather/scatter, so strided loops
   cannot vectorise at all. Hence directives with diagnostics rather than
@@ -196,6 +251,7 @@ bit-identity tests.
 
 **Next**
 - `@simd` lowering to `v128` (currently parsed and checked, emits scalar)
+- `@private` lowering to per-thread storage (currently parsed, not lowered)
 - Stride and dependence diagnostics for `@simd`
 - `schedule(static)` distinct from dynamic
 - `@reduction` with a deterministic blocked form, so bit-identity survives
@@ -206,9 +262,15 @@ bit-identity tests.
 
 ```console
 npm test                 # bit-identity: source-as-JS vs compiled wasm
-npm run example          # build examples/backtest.js
-node bin/smp.js emit examples/backtest.js
+npm run bench            # the HSEQR benchmark above
+npm run bench:lapack     # ...including LAPACK (needs: npm i -D pyodide)
+node bin/smp.js emit examples/hseqr.js
 ```
+
+| example | |
+|---|---|
+| `examples/hseqr.js` | HSEQR eigensolver — the flagship, and the benchmark above |
+| `examples/backtest.js` | a smaller parameter sweep, if you want something shorter to read |
 
 ## License
 

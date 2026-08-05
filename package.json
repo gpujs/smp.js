@@ -32,7 +32,9 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.js",
-    "example": "node bin/smp.js build examples/backtest.js --out examples/build --verbose"
+    "example": "node bin/smp.js build examples/hseqr.js --out examples/build --memory 600",
+    "bench": "npm run example && node examples/bench-hseqr.js",
+    "bench:lapack": "npm run example && node examples/bench-hseqr.js --lapack"
   },
   "keywords": [
     "wasm",

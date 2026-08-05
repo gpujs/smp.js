@@ -4,3 +4,4 @@ examples/build/
 *.wat
 .DS_Store
 test/.build/
+test/.build-hseqr/

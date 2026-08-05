@@ -247,20 +247,23 @@ class Emitter {
   }
 
   declare(decl, kindKeyword) {
+    // One keyword for the whole statement, however many declarators follow:
+    // `let a: i32 = 0, b: f64 = 1.0`. Emitting the keyword per declarator is a
+    // parse error, and it is invisible until a kernel declares two things at once.
     const parts = [];
     for (const d of decl.declarations) {
       if (d.id.type !== "Identifier") this.fail("destructuring is not supported in a kernel", d.id);
       if (!d.init) {
         this.scope.set(d.id.name, { kind: "scalar", type: "f64" });
-        parts.push(`${kindKeyword} ${d.id.name}: f64 = 0.0`);
+        parts.push(`${d.id.name}: f64 = 0.0`);
         continue;
       }
       const t = this.typeOf(d.init) === "bool" ? "bool" : this.typeOf(d.init);
       const init = this.expr(d.init);
       this.scope.set(d.id.name, { kind: "scalar", type: t });
-      parts.push(`${kindKeyword} ${d.id.name}: ${t} = ${init}`);
+      parts.push(`${d.id.name}: ${t} = ${init}`);
     }
-    return parts.join(", ");
+    return `${kindKeyword} ${parts.join(", ")}`;
   }
 
   stmt(node, indent = "  ") {
