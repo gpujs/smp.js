@@ -205,6 +205,26 @@ error: kernels.js:41:18 'helper' is not a @kernel in this module
 exactly. Pass a non-integral value and the fallback and the compiled build will
 disagree.
 
+## What it is for
+
+A survey of Reference LAPACK 3.12.1, Reference BLAS and Eigen 3.4.0, classified
+from source rather than recall — see [`docs/SURVEY.md`](docs/SURVEY.md):
+
+| | LAPACK (330 double-precision routines) |
+|---|---:|
+| iterative, no level-3 BLAS anywhere | 21 (6.4%) |
+| iterative *and* level-3 BLAS phases | 33 (10.0%) |
+| level-3 BLAS-bound, not iterative | 126 (38.2%) |
+| scalar / BLAS-1-2, memory-bound | 150 (45.5%) |
+
+**~17% is smp.js territory, and it is a coherent 17%: the entire eigenvalue and
+SVD surface.** LU, Cholesky and QR are not — they are GEMM-shaped. Eigen splits
+the same way, 13 of 65 solver headers carrying a convergence bound.
+
+On the web that share is a floor rather than a ceiling: WGSL has **no f64**, so
+the GEMM-bound 38% has no GPU to go to either. And `@stdlib` ships no symmetric
+eigensolver at all, so the 17% is largely unserved rather than merely contested.
+
 ## Why this design
 
 It came out of a measurement study rather than a hunch. The findings that shaped
