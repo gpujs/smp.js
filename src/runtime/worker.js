@@ -2,7 +2,7 @@
 // the only difference is how the bootstrap payload arrives.
 
 import {
-  C_GEN, C_DONE, C_CURSOR, C_CHUNK, C_TOTAL, C_FN, C_NARGS, C_QUIT, C_ARGS,
+  C_GEN, C_DONE, C_CURSOR, C_CHUNK, C_TOTAL, C_FN, C_NARGS, C_QUIT, C_ARGS, MAX_ARGS,
 } from "./index.js";
 
 const IS_NODE = typeof process !== "undefined" && !!process.versions?.node;
@@ -15,7 +15,7 @@ const SPIN = 20000;
 
 async function boot({ ctrlBuf, memory, wasmUrl, tid, threads, fnNames }) {
   const ctrl = new Int32Array(ctrlBuf);
-  const args = new Float64Array(ctrlBuf, C_ARGS * 4, 8);
+  const args = new Float64Array(ctrlBuf, C_ARGS * 4, MAX_ARGS);
 
   let bytes;
   if (IS_NODE) {

@@ -5,3 +5,4 @@ examples/build/
 .DS_Store
 test/.build/
 test/.build-hseqr/
+test/.build-spatial/

@@ -89,3 +89,45 @@ stride from `n`.
 | one large problem with internal parallelism | codegen only, until `@parallel for` can express intra-problem work |
 | one small problem | codegen only, ~1.6× |
 | any of the above with a power-of-two leading dimension | pad it first |
+
+## Transcendental functions break bit-identity
+
+IEEE-754 requires correct rounding for `+ - * / sqrt`, but **not** for `sin`,
+`cos`, `tan`, `atan`, `atan2`, `exp`, `log` or `pow`. V8's libm and
+AssemblyScript's differ by about 1 ulp, so any kernel using them will *not* be
+bit-identical between the plain-JS fallback and the compiled wasm.
+
+Measured on `examples/geodesic.js` (Vincenty, five trig calls per iteration):
+
+| | |
+|---|---|
+| results differing | 8.9% |
+| worst relative error | 1.4e-13 |
+| worst absolute error over 1000 km | 0.14 µm |
+
+So the divergence is real but tiny, and it is *accumulated* 1-ulp differences
+amplified through an iterative loop — not a codegen bug.
+
+**If you need exact identity**, AssemblyScript can call back into the host's
+`Math` (`asc --use Math=JSMath`). Verified: 0/50,000 differing. It costs a host
+call per operation — 0.80× versus plain JS, against 0.95× for the native build.
+smp.js does not expose this yet; it is a candidate flag.
+
+**Kernels using only algebra stay bit-identical.** `spatial-join.js` and
+`hseqr.js` use `abs` and `sqrt` only, and both are exact at every thread count.
+
+## Where AOT codegen wins, and where it does not
+
+| example | dominated by | codegen (1 thread) | threaded (8) |
+|---|---|---:|---:|
+| `spatial-join.js` | comparisons, multiply, branches | **2.42×** | 17.39× |
+| `hseqr.js` | f64 algebra, branches | 1.63× | 11.90× |
+| `geodesic.js` | `sin`/`cos`/`atan2` | **0.95×** | 6.98× |
+
+The pattern is consistent: **AOT wins on arithmetic and branches, and loses on
+transcendentals.** V8's `Math` is already excellent and AssemblyScript's is a
+portable musl port, so a trig-bound kernel gets nothing from compilation — though
+threading still pays, which is why `geodesic.js` is still 7× overall.
+
+Pick the workload accordingly: if a kernel is mostly `Math.sin`, smp.js buys you
+threads, not codegen.

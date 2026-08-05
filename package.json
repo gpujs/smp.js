@@ -32,10 +32,11 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.js",
-    "example": "node bin/smp.js build examples/hseqr.js --out examples/build --memory 600",
-    "bench": "npm run example && node examples/bench-hseqr.js",
-    "bench:lapack": "npm run example && node examples/bench-hseqr.js --lapack",
-    "bench:single": "npm run example && node examples/bench-single.js"
+    "example": "node bin/smp.js build examples/spatial-join.js --out examples/build --memory 400",
+    "bench": "npm run example && node examples/bench-spatial.js",
+    "bench:lapack": "node bin/smp.js build examples/hseqr.js --out examples/build --memory 600 && node examples/bench-hseqr.js --lapack",
+    "bench:single": "node bin/smp.js build examples/hseqr.js --out examples/build --memory 600 && node examples/bench-single.js",
+    "bench:geodesic": "node bin/smp.js build examples/geodesic.js --out examples/build --memory 800 && node examples/bench-geodesic.js"
   },
   "keywords": [
     "wasm",

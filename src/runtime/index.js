@@ -22,7 +22,11 @@ export const C_FN = 50;
 export const C_NARGS = 51;
 export const C_QUIT = 52;
 export const C_ARGS = 64; // f64 args live in a parallel Float64Array view
-export const C_INTS = 128;
+// 32 slots, not 8. A kernel with more parameters than the control block holds
+// used to lose the surplus silently: the dropped pointers arrived as 0 and every
+// threaded write landed at address 0 while the timings still looked plausible.
+export const MAX_ARGS = 32;
+export const C_INTS = 192;
 
 /** ~32 chunks per thread: enough to balance a skewed workload, few enough that
  *  atomic traffic stays proportional to chunk count rather than item count. */
@@ -71,7 +75,7 @@ class Pool {
     this.NodeWorker = NodeWorker;
     this.ctrlBuf = new SharedArrayBuffer(C_INTS * 4);
     this.ctrl = new Int32Array(this.ctrlBuf);
-    this.args = new Float64Array(this.ctrlBuf, C_ARGS * 4, 8);
+    this.args = new Float64Array(this.ctrlBuf, C_ARGS * 4, MAX_ARGS);
     this.fnNames = fnNames;
     this.workers = [];
 
@@ -102,6 +106,12 @@ class Pool {
   /** Dispatch and join. Everything bulk lives in shared memory; only small
    *  control words cross here. */
   run(fnIndex, total, args) {
+    if (args.length > MAX_ARGS) {
+      throw new Error(
+        `smp.js: kernel takes ${args.length} arguments, but the pool control block holds ${MAX_ARGS}. ` +
+        `Raise MAX_ARGS in src/runtime/index.js and src/runtime/worker.js together.`
+      );
+    }
     const c = this.ctrl;
     for (let i = 0; i < args.length; i++) this.args[i] = args[i];
     Atomics.store(c, C_NARGS, args.length);

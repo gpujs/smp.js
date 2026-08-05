@@ -6,99 +6,87 @@ JavaScript with no compiler involved.
 
 ```js
 /**
- * Solve a batch of eigenproblems. One directive is the entire concurrency
- * surface -- `runHSEQR` below it is 150 lines of branchy f64 numerics that never
- * mention threads, memory or the compiler.
+ * Assign every point to the zone containing it. One directive is the entire
+ * concurrency surface.
  *
  * @kernel
  * @parallel for schedule(dynamic)
- * @shared mats
- * @param {Float64Array} mats
+ * @shared verts, polyOff, polyLen, bbox
+ * @param {Float64Array} px
+ * @param {Float64Array} py
  * @param {i32} n
- * @param {Float64Array} wrOut
- * @param {Float64Array} wiOut
- * @param {Float64Array} scratch
- * @param {i32} K
+ * @param {Float64Array} verts
+ * @param {Int32Array} polyOff
+ * @param {Int32Array} polyLen
+ * @param {Float64Array} bbox
+ * @param {i32} nPoly
+ * @param {Int32Array} out
  */
-export function runBatch(mats, n, wrOut, wiOut, scratch, K) {
-  for (let b = 0; b < K; b++) {
-    const base = b * n * n;
-    for (let i = 0; i < n * n; i++) scratch[base + i] = mats[base + i];
-    runHSEQR(scratch, base, n, wrOut, b * n, wiOut, b * n, 60);
+export function assignZones(px, py, n, verts, polyOff, polyLen, bbox, nPoly, out) {
+  for (let i = 0; i < n; i++) {
+    const x = px[i], y = py[i];
+    let found = -1;
+    for (let p = 0; p < nPoly; p++) {
+      if (x < bbox[p*4] || x > bbox[p*4+1] || y < bbox[p*4+2] || y > bbox[p*4+3]) continue;
+      if (pointInPolygon(x, y, verts, polyOff[p], polyLen[p]) === 1) { found = p; break; }
+    }
+    out[i] = found;
   }
 }
 ```
 
 ```console
-$ npx smp.js build examples/hseqr.js --out build --memory 600
-examples/hseqr.js -> build/hseqr.wasm  [runHSEQR, runBatch]
-  loader: build/hseqr.js
+$ npx smp.js build examples/spatial-join.js --out build --memory 400
+examples/spatial-join.js -> build/spatial-join.wasm  [pointInPolygon, assignZones]
+  loader: build/spatial-join.js
 ```
 
 ```js
-import { load } from "./build/hseqr.js";
+import { load } from "./build/spatial-join.js";
 
 const smp = await load({ threads: navigator.hardwareConcurrency });
+const px  = smp.alloc.f64(nPoints);
+const py  = smp.alloc.f64(nPoints);
+const out = smp.alloc.i32(nPoints);
+px.view.set(lons); py.view.set(lats);
 
-const mats    = smp.alloc.f64(K * n * n);
-const scratch = smp.alloc.f64(K * n * n);  // each iteration works in its own slice
-const wr      = smp.alloc.f64(K * n);
-const wi      = smp.alloc.f64(K * n);
-mats.view.set(batch);
-
-smp.parallel.runBatch(K, mats.ptr, n, wr.ptr, wi.ptr, scratch.ptr, K);
-// wr.view / wi.view now hold K * n eigenvalues
+smp.parallel.assignZones(nPoints, px.ptr, py.ptr, nPoints,
+                         verts.ptr, off.ptr, len.ptr, bbox.ptr, nPoly, out.ptr);
 ```
 
 ## Benchmark
 
-`examples/hseqr.js` is **HSEQR** — the Francis double-shift QR iteration for
-nonsymmetric eigenvalues. It is the LAPACK phase a GPU cannot take: f64-critical
-(at f32 epsilon, clustered eigenvalues never separate, and WGSL has no f64),
-branch-divergent, strictly sequential within one matrix, and small enough to be
-latency-bound. So the parallelism has to come from batching across matrices.
+**Spatial join** — a million GPS points against 200 delivery zones. Geofencing,
+catchment analysis, "which service area is this address in": one of the most-run
+computations in anything location-shaped, and the batch is inherent rather than
+staged for a demo.
 
-512 matrices at n=64, Apple M2 Max, Node 24. Reproduce with `npm run bench`:
+Apple M2 Max, Node 24. Reproduce with `npm run bench`:
 
-| | time | vs plain JS | vs LAPACK |
-|---|---:|---:|---:|
-| source run as plain JavaScript | 317.1 ms | 1.00× | 0.95× |
-| **smp.js, 1 thread** | **194.9 ms** | **1.63×** | **1.55×** |
-| smp.js, 4 threads | 52.2 ms | 6.08× | 5.79× |
-| **smp.js, 8 threads** | **26.6 ms** | **11.90×** | **11.35×** |
-| LAPACK `dhseqr` (Fortran → Emscripten → wasm) | 302.3 ms | — | 1.00× |
+| | time | vs plain JS |
+|---|---:|---:|
+| source run as plain JavaScript | 597 ms | 1.00× |
+| **smp.js, 1 thread** | **247 ms** | **2.42×** |
+| smp.js, 4 threads | 68 ms | 8.82× |
+| **smp.js, 8 threads** | **34 ms** | **17.39×** |
 
-Every smp.js result is **bit-identical** to the same source run as plain
-JavaScript. The spectra agree with LAPACK to `1.5e-14`, and 21,930 of 32,768
-eigenvalues come out complex — this is genuinely exercising the nonsymmetric
-path, not a symmetric problem in disguise.
+Every result is **bit-identical** to the same source run as plain JavaScript.
 
-**Batching is doing a lot of that work.** HSEQR has no parallelism *inside* one
-matrix, so a single call gets codegen only — about **1.5–1.6×**, at any thread
-count. The 11.9× needs independent problems to spread across cores. There is also
-a sharp cache cliff at power-of-two leading dimensions (n=512 runs 2.8× slower
-than n=511). Both are measured in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
+**Why a GPU is a poor fit here.** Ray casting is SIMT-hostile in three ways, all
+of them visible in the snippet above: per-point early exit (one point finds its
+zone and stops while its neighbour keeps scanning), polygon vertex counts that
+vary by orders of magnitude in real boundary data, and irregular access into a
+ragged vertex array. Coordinates are f64 because f32 gives roughly metre-level
+error on lat/lon — exactly the scale at which "inside or outside" is being decided.
 
-Payload matters as much as the timing:
+### Other examples
 
-| | |
+| example | what it shows |
 |---|---|
-| `hseqr.wasm` | **2.4 KB** |
-| Pyodide runtime + numpy + scipy wheels | ~29 MB, ~2 s startup |
-
-**How the LAPACK arm is measured.** scipy exposes `dgeev`, not `dhseqr`, and
-`dgeev` = balance + `dgehrd` + `dhseqr`. Our inputs are *already* Hessenberg, so
-every Householder reflector in `dgehrd` is trivially zero and the reduction
-collapses to O(n²) — measured at 2.4 ms against 74 ms on dense controls. So
-`dgeev`'s cost here really is the QR iteration. Python wrapper overhead (1.2 ms
-over 512 calls) is measured separately and subtracted. At n=64, LAPACK's `dhseqr`
-delegates to `dlahqr`, the same classic double-shift this kernel implements;
-above LAPACK's `NMIN` (~75) it switches to multishift with aggressive early
-deflation and would win on algorithm rather than codegen.
-
-Pyodide's scipy is a non-pthreads wasm32 build (`os.cpu_count() == 1`), so the
-multi-threaded rows compare against a single-threaded LAPACK. That is the only
-wasm LAPACK available; the comparison is noted rather than hidden.
+| `examples/spatial-join.js` | the benchmark above — 2.4× codegen, 17.4× threaded |
+| `examples/hseqr.js` | LAPACK's nonsymmetric eigensolver, and a comparison against **LAPACK compiled to wasm**: 1.55× single-threaded, 11.35× at 8 threads, 2.4 KB against Pyodide's ~29 MB. `npm run bench:lapack` |
+| `examples/geodesic.js` | Vincenty distance — the case a GPU genuinely *cannot* run (WGSL has no f64 and the 1e-12 convergence floor is unreachable in f32). Also the case where AOT wins nothing: see [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) |
+| `examples/backtest.js` | a shorter parameter sweep, if you want something small to read |
 
 ## Why comments
 
