@@ -73,6 +73,12 @@ JavaScript. The spectra agree with LAPACK to `1.5e-14`, and 21,930 of 32,768
 eigenvalues come out complex — this is genuinely exercising the nonsymmetric
 path, not a symmetric problem in disguise.
 
+**Batching is doing a lot of that work.** HSEQR has no parallelism *inside* one
+matrix, so a single call gets codegen only — about **1.5–1.6×**, at any thread
+count. The 11.9× needs independent problems to spread across cores. There is also
+a sharp cache cliff at power-of-two leading dimensions (n=512 runs 2.8× slower
+than n=511). Both are measured in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
+
 Payload matters as much as the timing:
 
 | | |
@@ -258,6 +264,8 @@ bit-identity tests.
 - `@reduction` with a deterministic blocked form, so bit-identity survives
 - Monomorphisation: `{f32,f64} × {row-major,col-major}` variants at build time
 - Source maps from generated AssemblyScript back to the original JS
+- A separate `lda` parameter for kernels, so callers can pad the leading
+  dimension away from a power of two (see `docs/PERFORMANCE.md`)
 
 ## Development
 
@@ -272,6 +280,7 @@ node bin/smp.js emit examples/hseqr.js
 |---|---|
 | `examples/hseqr.js` | HSEQR eigensolver — the flagship, and the benchmark above |
 | `examples/backtest.js` | a smaller parameter sweep, if you want something shorter to read |
+| `examples/bench-single.js` | unbatched timings, and the power-of-two cliff |
 
 ## License
 
