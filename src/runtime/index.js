@@ -50,8 +50,17 @@ async function loadBytes(url) {
 class Arena {
   constructor(memory, base) {
     this.memory = memory;
+    this.base = base;
     this.offset = base;
   }
+  /**
+   * Rewind to empty. Allocation is a bump pointer with no free, which is fine
+   * for a one-shot script and wrong for anything long-lived: a page that calls
+   * a kernel once per interaction exhausts wasm memory after enough calls, and
+   * the failure looks like a capacity problem rather than a leak. Call this at
+   * the top of each batch of work; every view handed out before it is dead.
+   */
+  reset() { this.offset = this.base; }
   #bump(bytes) {
     const p = (this.offset + 7) & ~7;
     this.offset = p + bytes;

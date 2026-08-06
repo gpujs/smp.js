@@ -92,7 +92,19 @@ class Emitter {
         const c = this.typeOf(node.consequent);
         return c === "bool" ? this.typeOf(node.alternate) : c;
       }
-      case "CallExpression": return "f64"; // Math.* in the supported subset
+      case "CallExpression": {
+        // A call to a sibling kernel has a declared return type -- use it.
+        // Assuming f64 here silently mistypes every local bound to a kernel
+        // call, and the error only surfaces much later as an AssemblyScript
+        // cast failure at the point the local is *used*, pointing at a line
+        // with nothing wrong with it. `const it = tqli(...)` in a kernel
+        // returning i32 is the case that found this.
+        if (node.callee.type === "Identifier") {
+          const sig = this.fnSigs.get(node.callee.name);
+          if (sig?.returns && sig.returns !== "void") return sig.returns;
+        }
+        return "f64"; // Math.* is f64 in AssemblyScript, including floor/round
+      }
       case "AssignmentExpression": return this.typeOf(node.right);
       case "UpdateExpression": return this.typeOf(node.argument);
       default: return "f64";
